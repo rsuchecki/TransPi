@@ -2297,9 +2297,14 @@ if (params.onlyAsm || params.onlyAnn || params.onlyEvi || params.all) {
             }
         }
 
-        trinotate_ch = Channel.create()
+
         //map{it.flatten()} for onlyAnn issue in names
-        evigene_ch_trinotate.map{it.flatten()}.mix( transdecoder_ch_trinotate,trinotate_ch_diamondX,trinotate_ch_diamondP,trinotate_ch_diamondX_custom,trinotate_ch_diamondP_custom,trinotate_ch_hmmer,trinotate_ch_signalp,trinotate_ch_tmhmm,trinotate_ch_rnammer ).groupTuple(by:0,size:10).into(trinotate_ch)
+        evigene_ch_trinotate.map {
+            it.flatten()
+        }
+        .mix( transdecoder_ch_trinotate,trinotate_ch_diamondX,trinotate_ch_diamondP,trinotate_ch_diamondX_custom,trinotate_ch_diamondP_custom,trinotate_ch_hmmer,trinotate_ch_signalp,trinotate_ch_tmhmm,trinotate_ch_rnammer )
+        .groupTuple(by:0,size:10)
+        .set{ trinotate_ch }
 
         process trinotate {
 
@@ -2322,61 +2327,47 @@ if (params.onlyAsm || params.onlyAnn || params.onlyEvi || params.all) {
                 tuple sample_id, file("${sample_id}.GO.terms.txt") into trinotate_summary
                 tuple sample_id, file("${sample_id}.trinotate_annotation_report.xls") into ( trinotate_out_ch, custom_uniprot_ch )
                 tuple sample_id, file("*.terms.txt") into other_files
-                tuple sample_id, file("${sample_id}.KEGG.terms.txt") into kegg_paths
+                tuple sample_id, file("${sample_id}.KEGG.terms.txt") optional true into kegg_paths
                 file("trinotate.version.txt") into trinotate_version
                 file("perl.version.txt") into perl_version
 
             script:
                 """
-                for x in `echo ${files}`;do
-                    echo \${x} >>.vars.txt
-                done
-
-                assembly=\$( cat .vars.txt | grep -E "${sample_id}.*.fa" | grep -v ".transdecoder.pep" )
-                transdecoder=\$( cat .vars.txt | grep -E "${sample_id}.*.transdecoder.pep" )
-                diamond_blastx=\$( cat .vars.txt | grep "${sample_id}.diamond_blastx.outfmt6" )
-                diamond_blastp=\$( cat .vars.txt | grep "${sample_id}.diamond_blastp.outfmt6" )
-                custom_blastx=\$( cat .vars.txt | grep "${sample_id}.custom.diamond_blastx.outfmt6" )
-                custom_blastp=\$( cat .vars.txt | grep "${sample_id}.custom.diamond_blastp.outfmt6" )
-                pfam=\$( cat .vars.txt | grep "${sample_id}.TrinotatePFAM.out" )
-                signalp=\$( cat .vars.txt | grep "${sample_id}.signalp.out" )
-                tmhmm=\$( cat .vars.txt | grep "${sample_id}.tmhmm.out" )
-                rnammer=\$( cat .vars.txt | grep "${sample_id}.rnammer.gff" )
+                assembly=${files.find{ it =~ /^${sample_id}.*\.fa$/ }}
+                signalp=${files.find{ it =~ /^${sample_id}\.signalp\.out$/ }}
+                tmhmm=${files.find{ it =~ /^${sample_id}\.tmhmm\.out$/ }}
+                rnammer=${files.find{ it =~ /^${sample_id}\.rnammer\.gff$/ }}
 
                 #Generate gene_trans_map
                 #Not using get_Trinity_gene_to_trans_map.pl since all the names are uniq
-                cat \${assembly} | awk '{print \$1}' | grep ">" | cut -c 2- >a.txt
-
-                #paste a.txt a.txt >\${assembly}.gene_trans_map - does not work in container
-                touch \${assembly}.gene_trans_map
-                for x in `cat a.txt`;do echo -e \${x}"\\t"\${x} >>\${assembly}.gene_trans_map ;done
+                awk '/^>/{gsub("^>",""); print \$1"\\t"\$1}' \${assembly} > \${assembly}.gene_trans_map
 
                 #Get Trinotate.sqlite from folder (original)
                 cp ${params.Tsql} .
-                sqlname=`echo ${params.Tsql} | tr "\\/" "\\n" | grep "\\.sqlite"`
+                sqlname=${params.Tsql.split('/')[-1]}
 
                 echo -e "\\n-- Running Trinotate --\\n"
 
-                Trinotate \$sqlname init --gene_trans_map \${assembly}.gene_trans_map --transcript_fasta \${assembly} --transdecoder_pep \${transdecoder}
+                Trinotate \$sqlname init --gene_trans_map \${assembly}.gene_trans_map --transcript_fasta \${assembly} --transdecoder_pep ${files.find{ it =~ /^${sample_id}.*\.transdecoder.pep$/ }}
 
                 echo -e "\\n-- Ending run of Trinotate --\\n"
 
                 echo -e "\\n-- Loading hits and predictions to sqlite database... --\\n"
 
                 #Load protein hits
-                Trinotate \$sqlname LOAD_swissprot_blastp \${diamond_blastp}
+                Trinotate \$sqlname LOAD_swissprot_blastp ${files.find{ it =~ /^${sample_id}\.diamond_blastp\.outfmt6$/ }}
 
                 #Load transcript hits
-                Trinotate \$sqlname LOAD_swissprot_blastx \${diamond_blastx}
+                Trinotate \$sqlname LOAD_swissprot_blastx ${files.find{ it =~ /^${sample_id}\.diamond_blastx\.outfmt6$/ }}
 
                 #Load custom protein hits
-                Trinotate \$sqlname LOAD_custom_blast --outfmt6 \${custom_blastp} --prog blastp --dbtype ${params.uniname}
+                Trinotate \$sqlname LOAD_custom_blast --outfmt6 ${files.find{ it =~ /^${sample_id}\.custom\.diamond_blastp\.outfmt6$/ }} --prog blastp --dbtype ${params.uniname}
 
                 #Load custom transcript hits
-                Trinotate \$sqlname LOAD_custom_blast --outfmt6 \${custom_blastx} --prog blastx --dbtype ${params.uniname}
+                Trinotate \$sqlname LOAD_custom_blast --outfmt6 ${files.find{ it =~ /^${sample_id}\.custom\.diamond_blastx\.outfmt6$/ }} --prog blastx --dbtype ${params.uniname}
 
                 #Load Pfam domain entries
-                Trinotate \$sqlname LOAD_pfam \${pfam}
+                Trinotate \$sqlname LOAD_pfam ${files.find{ it =~ /^${sample_id}\.TrinotatePFAM\.out$/ }}
 
                 #Load transmembrane domains
                 if [ -s \${tmhmm} ];then
@@ -2425,7 +2416,7 @@ if (params.onlyAsm || params.onlyAnn || params.onlyEvi || params.all) {
 
                 echo -e "\\n-- Creating eggNOG file from XLS... --\\n"
 
-                cat ${sample_id}.trinotate_annotation_report.xls | cut -f 1,13 | grep "OG" | tr "\\`" ";" | sed 's/^/#/g' | sed 's/;/\\n;/g' | cut -f 1 -d "^" | tr -d "\\n" | tr "#" "\\n" | grep "OG" >${sample_id}.eggNOG_COG.terms.txt
+                cat ${sample_id}.trinotate_annotation_report.xls | cut -f 1,13 | grep "OG" | tr "\\`" ";" | sed 's/^/#/g' | sed 's/;/\\n;/g' | cut -f 1 -d "^" | tr -d "\\n" | tr "#" "\\n"  >${sample_id}.eggNOG_COG.terms.txt
 
                 echo -e "\\n-- Done with the eggNOG --\\n"
 
@@ -2461,7 +2452,7 @@ if (params.onlyAsm || params.onlyAnn || params.onlyEvi || params.all) {
                 tuple sample_id, file("${sample_id}.trinotate_annotation_report.xls") from trinotate_out_ch
 
             output:
-                tuple sample_id, file("*.svg"), file("*.pdf") , file("*.txt") into go_fig
+                tuple sample_id, file("*.svg"), file("*.pdf") , file("*.txt") optional true into go_fig
                 tuple sample_id, file("*.csv") into go_csv
                 file("r.version.txt") into r_version
 
